@@ -8,11 +8,13 @@
 #include "ui.h"
 #include "api.h"
 #include "cache.h"
+#include "datapack.h"
 #include "geo.h"
 
 static FlightDB flight_db;
 static MapState map_state;
 static UIState  ui_state;
+static PackIndex pack_index;
 
 static u64 last_fetch_tick = 0;
 static bool fetch_pending = false;
@@ -69,6 +71,9 @@ int main(int argc, char *argv[]) {
 
     bool api_ok = api_init();
 
+    // Scan existing data packs
+    pack_scan(&pack_index);
+
     // Try to load cached flights first
     if (cache_load(&flight_db)) {
         // Got cached data, will refresh from API shortly
@@ -87,6 +92,8 @@ int main(int argc, char *argv[]) {
         // Help toggle
         if (kDown & KEY_START) {
             if (ui_state.view == UI_VIEW_HELP)
+                ui_state.view = UI_VIEW_MAP;
+            else if (ui_state.view == UI_VIEW_PACKS)
                 ui_state.view = UI_VIEW_MAP;
             else
                 ui_state.view = UI_VIEW_HELP;
@@ -107,9 +114,18 @@ int main(int argc, char *argv[]) {
             if (kHeld & KEY_DLEFT)  map_pan(&map_state, 0, -pan_speed);
             if (kHeld & KEY_DRIGHT) map_pan(&map_state, 0, pan_speed);
 
-            // L/R: zoom
-            if (kDown & KEY_L) map_zoom_out(&map_state);
-            if (kDown & KEY_R) map_zoom_in(&map_state);
+            // L/R: zoom (L+R together: open data packs)
+            if ((kDown & KEY_L) && (kHeld & KEY_R)) {
+                pack_scan(&pack_index);
+                ui_state.view = UI_VIEW_PACKS;
+            } else if ((kDown & KEY_R) && (kHeld & KEY_L)) {
+                pack_scan(&pack_index);
+                ui_state.view = UI_VIEW_PACKS;
+            } else if (kDown & KEY_L) {
+                map_zoom_out(&map_state);
+            } else if (kDown & KEY_R) {
+                map_zoom_in(&map_state);
+            }
 
             // A: select nearest flight / show detail
             if (kDown & KEY_A) {
@@ -161,9 +177,77 @@ int main(int argc, char *argv[]) {
                 }
             }
 
-            // Y: force refresh
+            // Y: save data pack (long press could be force refresh)
             if (kDown & KEY_Y) {
-                fetch_pending = true;
+                if (flight_db.count > 0) {
+                    char pack_name[PACK_NAME_LEN];
+                    pack_auto_name(pack_name, sizeof(pack_name),
+                                   map_state.center_lat, map_state.center_lon);
+                    pack_save(pack_name, &flight_db,
+                              map_state.center_lat, map_state.center_lon,
+                              map_state.zoom);
+                    pack_scan(&pack_index);
+                    // Switch to pack view to confirm
+                    ui_state.view = UI_VIEW_PACKS;
+                    ui_state.pack_selected = pack_index.count - 1;
+                } else {
+                    fetch_pending = true;
+                }
+            }
+        }
+
+        // Pack browser controls
+        if (ui_state.view == UI_VIEW_PACKS) {
+            if (kDown & KEY_DUP) {
+                if (ui_state.pack_selected > 0) ui_state.pack_selected--;
+                if (ui_state.pack_selected < ui_state.pack_scroll)
+                    ui_state.pack_scroll = ui_state.pack_selected;
+            }
+            if (kDown & KEY_DDOWN) {
+                if (ui_state.pack_selected < pack_index.count - 1)
+                    ui_state.pack_selected++;
+                int visible = (BOTTOM_H - 40) / 18;
+                if (ui_state.pack_selected >= ui_state.pack_scroll + visible)
+                    ui_state.pack_scroll = ui_state.pack_selected - visible + 1;
+            }
+            // A: load selected pack
+            if (kDown & KEY_A) {
+                if (pack_index.count > 0) {
+                    float lat, lon, zoom;
+                    if (pack_load(&pack_index, ui_state.pack_selected,
+                                  &flight_db, &lat, &lon, &zoom)) {
+                        map_state.center_lat = lat;
+                        map_state.center_lon = lon;
+                        map_state.zoom = zoom;
+                        ui_state.view = UI_VIEW_MAP;
+                    }
+                }
+            }
+            // X: delete selected pack
+            if (kDown & KEY_X) {
+                if (pack_index.count > 0) {
+                    pack_delete(&pack_index, ui_state.pack_selected);
+                    pack_scan(&pack_index);
+                    if (ui_state.pack_selected >= pack_index.count && pack_index.count > 0)
+                        ui_state.pack_selected = pack_index.count - 1;
+                }
+            }
+            // B: back to map
+            if (kDown & KEY_B) {
+                ui_state.view = UI_VIEW_MAP;
+            }
+            // Y: save current as new pack
+            if (kDown & KEY_Y) {
+                if (flight_db.count > 0) {
+                    char pack_name[PACK_NAME_LEN];
+                    pack_auto_name(pack_name, sizeof(pack_name),
+                                   map_state.center_lat, map_state.center_lon);
+                    pack_save(pack_name, &flight_db,
+                              map_state.center_lat, map_state.center_lon,
+                              map_state.zoom);
+                    pack_scan(&pack_index);
+                    ui_state.pack_selected = pack_index.count - 1;
+                }
             }
         }
 
@@ -195,7 +279,7 @@ int main(int argc, char *argv[]) {
         u16 bot_w, bot_h;
         u8 *bot_fb = gfxGetFramebuffer(GFX_BOTTOM, GFX_LEFT, &bot_h, &bot_w);
         ui_render_bottom(bot_fb, &ui_state, &flight_db, &map_state,
-                        flight_db.online, cache_age());
+                        &pack_index, flight_db.online, cache_age());
 
         gfxFlushBuffers();
         gfxSwapBuffers();

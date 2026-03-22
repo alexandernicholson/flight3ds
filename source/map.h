@@ -19,6 +19,7 @@ typedef struct {
     int   cursor_x;      // screen cursor position
     int   cursor_y;
     bool  cursor_active; // whether cursor is shown
+    bool  show_airports; // render airport markers
 } MapState;
 
 void map_init(MapState *ms);

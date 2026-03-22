@@ -1,5 +1,7 @@
 #include "ui.h"
 #include "geo.h"
+#include "airlines.h"
+#include "airports.h"
 #include <string.h>
 #include <stdio.h>
 #include <math.h>
@@ -168,12 +170,71 @@ void ui_init(UIState *ui) {
     ui->list_selected = 0;
     ui->show_status = true;
     ui->status_timer = 0;
+    ui->pack_selected = 0;
+    ui->pack_scroll = 0;
 }
 
 void ui_render_bottom(u8 *fb, const UIState *ui, const FlightDB *db,
-                      const MapState *ms, bool online, uint32_t cache_age_s) {
+                      const MapState *ms, const PackIndex *packs,
+                      bool online, uint32_t cache_age_s) {
     // Clear bottom screen
     memset(fb, 0, BOTTOM_W * BOTTOM_H * 3);
+
+    if (ui->view == UI_VIEW_PACKS) {
+        draw_text(fb, BOTTOM_W, BOTTOM_H, 10, 4, "DATA PACKS", 255, 255, 100);
+
+        char cnt_buf[32];
+        snprintf(cnt_buf, sizeof(cnt_buf), "%d saved", packs->count);
+        draw_text(fb, BOTTOM_W, BOTTOM_H, 90, 4, cnt_buf, 150, 150, 150);
+
+        draw_hline(fb, BOTTOM_W, BOTTOM_H, 5, 14, BOTTOM_W - 10, 60, 60, 60);
+
+        if (packs->count == 0) {
+            draw_text(fb, BOTTOM_W, BOTTOM_H, 10, 40,
+                     "No data packs saved yet.", 150, 150, 150);
+            draw_text(fb, BOTTOM_W, BOTTOM_H, 10, 60,
+                     "Press Y on map view to save", 150, 150, 150);
+            draw_text(fb, BOTTOM_W, BOTTOM_H, 10, 74,
+                     "the current flight snapshot.", 150, 150, 150);
+        } else {
+            int y = 18;
+            int row_h = 18;
+            int visible = (BOTTOM_H - 40) / row_h;
+            for (int i = ui->pack_scroll;
+                 i < packs->count && (i - ui->pack_scroll) < visible; i++) {
+                const PackInfo *pi = &packs->packs[i];
+                bool sel = (i == ui->pack_selected);
+
+                if (sel) {
+                    draw_fill_rect(fb, BOTTOM_W, BOTTOM_H, 5, y,
+                                  BOTTOM_W - 10, row_h, 30, 50, 80);
+                }
+
+                // Pack name
+                draw_text(fb, BOTTOM_W, BOTTOM_H, 10, y + 2,
+                         pi->name,
+                         sel ? 0 : 200, sel ? 255 : 200, 255);
+
+                // Region tag
+                draw_text(fb, BOTTOM_W, BOTTOM_H, 170, y + 2,
+                         pi->region, 150, 200, 150);
+
+                // Flight count
+                char fc_buf[16];
+                snprintf(fc_buf, sizeof(fc_buf), "%d flt", pi->flight_count);
+                draw_text(fb, BOTTOM_W, BOTTOM_H, 255, y + 2,
+                         fc_buf, 180, 180, 100);
+
+                y += row_h;
+            }
+        }
+
+        draw_hline(fb, BOTTOM_W, BOTTOM_H, 5, BOTTOM_H - 14,
+                  BOTTOM_W - 10, 60, 60, 60);
+        draw_text(fb, BOTTOM_W, BOTTOM_H, 10, BOTTOM_H - 10,
+                 "A:load  X:delete  B:back  Y:save", 120, 120, 120);
+        return;
+    }
 
     if (ui->view == UI_VIEW_HELP) {
         draw_text(fb, BOTTOM_W, BOTTOM_H, 10, 10, "FLIGHT3DS CONTROLS", 255, 255, 100);
@@ -184,10 +245,11 @@ void ui_render_bottom(u8 *fb, const UIState *ui, const FlightDB *db,
         draw_text(fb, BOTTOM_W, BOTTOM_H, 10, 54,  "A       Select nearest", 200, 200, 200);
         draw_text(fb, BOTTOM_W, BOTTOM_H, 10, 66,  "B       Deselect", 200, 200, 200);
         draw_text(fb, BOTTOM_W, BOTTOM_H, 10, 78,  "X       Toggle cursor", 200, 200, 200);
-        draw_text(fb, BOTTOM_W, BOTTOM_H, 10, 90,  "Y       Force refresh", 200, 200, 200);
-        draw_text(fb, BOTTOM_W, BOTTOM_H, 10, 102, "START   Help", 200, 200, 200);
+        draw_text(fb, BOTTOM_W, BOTTOM_H, 10, 90,  "Y       Save data pack", 200, 200, 200);
+        draw_text(fb, BOTTOM_W, BOTTOM_H, 10, 102, "START   Help / back", 200, 200, 200);
         draw_text(fb, BOTTOM_W, BOTTOM_H, 10, 114, "SELECT  Quit", 200, 200, 200);
-        draw_text(fb, BOTTOM_W, BOTTOM_H, 10, 134, "Circle  Move cursor", 200, 200, 200);
+        draw_text(fb, BOTTOM_W, BOTTOM_H, 10, 130, "Circle  Move cursor", 200, 200, 200);
+        draw_text(fb, BOTTOM_W, BOTTOM_H, 10, 142, "L+R     Open data packs", 200, 200, 200);
 
         draw_text(fb, BOTTOM_W, BOTTOM_H, 10, 160, "COLOR KEY:", 255, 255, 100);
         draw_fill_rect(fb, BOTTOM_W, BOTTOM_H, 10, 174, 6, 6, 255, 200, 50);
@@ -215,6 +277,12 @@ void ui_render_bottom(u8 *fb, const UIState *ui, const FlightDB *db,
             draw_text(fb, BOTTOM_W, BOTTOM_H, 10, 28, "Callsign:", 150, 150, 150);
             draw_text(fb, BOTTOM_W, BOTTOM_H, 80, 28, f->callsign[0] ? f->callsign : "N/A",
                      255, 255, 255);
+
+            // Airline name from callsign lookup
+            const char *airline = airline_lookup(f->callsign);
+            if (airline) {
+                draw_text(fb, BOTTOM_W, BOTTOM_H, 160, 28, airline, 100, 200, 255);
+            }
 
             draw_text(fb, BOTTOM_W, BOTTOM_H, 10, 42, "ICAO:", 150, 150, 150);
             draw_text(fb, BOTTOM_W, BOTTOM_H, 80, 42, f->icao24, 255, 255, 255);
@@ -254,7 +322,15 @@ void ui_render_bottom(u8 *fb, const UIState *ui, const FlightDB *db,
                      f->on_ground ? 150 : 255,
                      f->on_ground ? 150 : 100);
 
-            draw_text(fb, BOTTOM_W, BOTTOM_H, 10, 228, "B: back  D-Pad: browse",
+            // Nearest airport
+            const Airport *apt = airport_nearest(f->latitude, f->longitude, 200.0f);
+            if (apt) {
+                snprintf(buf, sizeof(buf), "%s (%s)", apt->name, apt->icao);
+                draw_text(fb, BOTTOM_W, BOTTOM_H, 10, 190, "Near:", 150, 150, 150);
+                draw_text(fb, BOTTOM_W, BOTTOM_H, 80, 190, buf, 100, 200, 255);
+            }
+
+            draw_text(fb, BOTTOM_W, BOTTOM_H, 10, 228, "B: back  A: next",
                      120, 120, 120);
             return;
         }
@@ -304,9 +380,10 @@ void ui_render_bottom(u8 *fb, const UIState *ui, const FlightDB *db,
         draw_text(fb, BOTTOM_W, BOTTOM_H, 10, y + 3,
                  f->callsign[0] ? f->callsign : f->icao24, tr, tg, tb);
 
-        // Country
+        // Airline or country
+        const char *al = airline_lookup(f->callsign);
         draw_text(fb, BOTTOM_W, BOTTOM_H, 70, y + 3,
-                 f->origin_country, 150, 150, 150);
+                 al ? al : f->origin_country, 150, 150, 150);
 
         // Altitude
         char alt_buf[16];

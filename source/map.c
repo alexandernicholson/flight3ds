@@ -1,6 +1,7 @@
 #include "map.h"
 #include "geo.h"
 #include "coastlines.h"
+#include "airports.h"
 #include <string.h>
 #include <math.h>
 
@@ -101,6 +102,7 @@ void map_init(MapState *ms) {
     ms->cursor_x = MAP_SCREEN_W / 2;
     ms->cursor_y = MAP_SCREEN_H / 2;
     ms->cursor_active = false;
+    ms->show_airports = true;
 }
 
 void map_render(u8 *fb, int fb_w, int fb_h, const MapState *ms, const FlightDB *db) {
@@ -181,6 +183,48 @@ void map_render(u8 *fb, int fb_w, int fb_h, const MapState *ms, const FlightDB *
         prev_sx = sx;
         prev_sy = sy;
         segment_started = true;
+    }
+
+    // Draw airports (only when zoomed in enough and enabled)
+    if (ms->show_airports && ms->zoom >= 3.0f) {
+        for (int i = 0; i < (int)NUM_AIRPORTS; i++) {
+            int sx, sy;
+            geo_project(airports[i].lat, airports[i].lon,
+                       ms->center_lat, ms->center_lon,
+                       ms->zoom, fb_w, fb_h, &sx, &sy);
+
+            if (sx < -5 || sx >= fb_w + 5 || sy < -5 || sy >= fb_h + 5) continue;
+
+            // Only show large airports at medium zoom, all at high zoom
+            if (ms->zoom < 6.0f && airports[i].type != APT_LARGE) continue;
+
+            if (airports[i].type == APT_LARGE) {
+                // Diamond shape for major hubs
+                fb_pixel(fb, fb_w, fb_h, sx, sy - 2, 100, 180, 255);
+                fb_pixel(fb, fb_w, fb_h, sx - 1, sy - 1, 100, 180, 255);
+                fb_pixel(fb, fb_w, fb_h, sx + 1, sy - 1, 100, 180, 255);
+                fb_pixel(fb, fb_w, fb_h, sx - 2, sy, 100, 180, 255);
+                fb_pixel(fb, fb_w, fb_h, sx + 2, sy, 100, 180, 255);
+                fb_pixel(fb, fb_w, fb_h, sx - 1, sy + 1, 100, 180, 255);
+                fb_pixel(fb, fb_w, fb_h, sx + 1, sy + 1, 100, 180, 255);
+                fb_pixel(fb, fb_w, fb_h, sx, sy + 2, 100, 180, 255);
+            } else {
+                // Small square for regional
+                fb_pixel(fb, fb_w, fb_h, sx, sy, 70, 130, 200);
+                fb_pixel(fb, fb_w, fb_h, sx + 1, sy, 70, 130, 200);
+                fb_pixel(fb, fb_w, fb_h, sx, sy + 1, 70, 130, 200);
+                fb_pixel(fb, fb_w, fb_h, sx + 1, sy + 1, 70, 130, 200);
+            }
+
+            // Label at high zoom
+            if (ms->zoom >= 8.0f) {
+                const char *label = airports[i].icao;
+                int lx = sx + 4;
+                for (int c = 0; c < 4 && label[c]; c++)
+                    draw_char(fb, fb_w, fb_h, lx + c * 5, sy - 3,
+                             label[c], 80, 140, 200);
+            }
+        }
     }
 
     // Draw flights
